@@ -1,131 +1,123 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 #[ink::contract]
-mod inky_erc20 {
+mod inky_bank {
     use ink::storage::Mapping;
 
     #[ink(storage)]
-    pub struct InkyErc20 {
-        total_supply: Balance,
-        balances: Mapping<AccountId, Balance>,
-        allowances: Mapping<(AccountId, AccountId), Balance>,
+    pub struct InkyBank {
+        owner: AccountId,
+        total_supply: u128,
+        balances: Mapping<AccountId, u128>,
+    }
+
+    /// Events
+    #[ink(event)]
+    pub struct Minted {
+        #[ink(topic)]
+        to: AccountId,
+        amount: u128,
     }
 
     #[ink(event)]
     pub struct Transfer {
         #[ink(topic)]
-        from: Option<AccountId>,
+        from: AccountId,
         #[ink(topic)]
-        to: Option<AccountId>,
-        value: Balance,
+        to: AccountId,
+        amount: u128,
     }
 
-    #[ink(event)]
-    pub struct Approval {
-        #[ink(topic)]
-        owner: AccountId,
-        #[ink(topic)]
-        spender: AccountId,
-        value: Balance,
-    }
-
+    /// Errors
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub enum Error {
         InsufficientBalance,
-        InsufficientAllowance,
+        NotOwner,
+        ZeroAmount,
     }
 
+    /// Result type for our contract functions
     pub type Result<T> = core::result::Result<T, Error>;
 
-    impl InkyErc20 {
+    impl Default for InkyBank {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl InkyBank {
+        /// Constructor
         #[ink(constructor)]
-        pub fn new(total_supply: Balance) -> Self {
-            let mut balances = Mapping::default();
+        pub fn new() -> Self {
             let caller = Self::env().caller();
-            balances.insert(caller, &total_supply);
-
-            Self::env().emit_event(Transfer {
-                from: None,
-                to: Some(caller),
-                value: total_supply,
-            });
-
             Self {
-                total_supply,
-                balances,
-                allowances: Default::default(),
+                owner: caller,
+                total_supply: 0,
+                balances: Mapping::default(),
             }
         }
 
         #[ink(message)]
-        pub fn total_supply(&self) -> Balance {
+        pub fn mint(&mut self, to: AccountId, amount: u128) -> Result<()> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                return Err(Error::NotOwner);
+            }
+
+            if amount == 0 {
+                return Err(Error::ZeroAmount);
+            }
+
+            let current_balance = self.balance_of(to);
+            let new_balance = current_balance.saturating_add(amount);
+            self.balances.insert(to, &new_balance);
+
+            self.total_supply = self.total_supply.saturating_add(amount);
+
+            self.env().emit_event(Minted { to, amount });
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn balance_of(&self, account: AccountId) -> u128 {
+            self.balances.get(account).unwrap_or(0)
+        }
+
+        #[ink(message)]
+        pub fn transfer(&mut self, to: AccountId, amount: u128) -> Result<()> {
+            let from = self.env().caller();
+
+            if amount == 0 {
+                return Err(Error::ZeroAmount);
+            }
+
+            let from_balance = self.balance_of(from);
+            if from_balance < amount {
+                return Err(Error::InsufficientBalance);
+            }
+
+            let new_from_balance = from_balance.saturating_sub(amount);
+            self.balances.insert(from, &new_from_balance);
+
+            let to_balance = self.balance_of(to);
+            let new_to_balance = to_balance.saturating_add(amount);
+            self.balances.insert(to, &new_to_balance);
+
+            self.env().emit_event(Transfer { from, to, amount });
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn total_supply(&self) -> u128 {
             self.total_supply
         }
 
         #[ink(message)]
-        pub fn balance_of(&self, owner: AccountId) -> Balance {
-            self.balances.get(owner).unwrap_or_default()
-        }
-
-        #[ink(message)]
-        pub fn allowance(&self, owner: AccountId, spender: AccountId) -> Balance {
-            self.allowances.get((owner, spender)).unwrap_or_default()
-        }
-
-        #[ink(message)]
-        pub fn transfer(&mut self, to: AccountId, value: Balance) -> Result<()> {
-            let from = self.env().caller();
-            self.transfer_from_to(&from, &to, value)
-        }
-
-        #[ink(message)]
-        pub fn approve(&mut self, spender: AccountId, value: Balance) -> Result<()> {
-            let owner = self.env().caller();
-            self.allowances.insert((owner, spender), &value);
-
-            self.env().emit_event(Approval {
-                owner,
-                spender,
-                value,
-            });
-
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn transfer_from( &mut self, from: AccountId, to: AccountId, value: Balance ) -> Result<()> {
-            let caller = self.env().caller();
-            let allowance = self.allowance(from, caller);
-
-            if allowance < value {
-                return Err(Error::InsufficientAllowance);
-            }
-
-            self.transfer_from_to(&from, &to, value)?;
-            self.allowances.insert((from, caller), &allowance.saturating_sub(value));
-
-            Ok(())
-        }
-
-        fn transfer_from_to( &mut self, from: &AccountId, to: &AccountId, value: Balance) -> Result<()> {
-            let from_balance = self.balance_of(*from);
-
-            if from_balance < value {
-                return Err(Error::InsufficientBalance);
-            }
-
-            self.balances.insert(from, &from_balance.saturating_sub(value));
-            let to_balance = self.balance_of(*to);
-            self.balances.insert(to, &to_balance.saturating_add(value));
-
-            self.env().emit_event(Transfer {
-                from: Some(*from),
-                to: Some(*to),
-                value,
-            });
-
-            Ok(())
+        pub fn owner(&self) -> AccountId {
+            self.owner
         }
     }
 }
